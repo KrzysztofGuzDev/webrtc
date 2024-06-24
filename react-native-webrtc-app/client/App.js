@@ -29,25 +29,28 @@ import InCallManager from 'react-native-incall-manager';
 
 export default function App({}) {
   const [localStream, setlocalStream] = useState(null);
-
   const [remoteStream, setRemoteStream] = useState(null);
-
   const [type, setType] = useState('JOIN');
 
-  const [callerId] = useState(
-    Math.floor(100000 + Math.random() * 900000).toString(),
-  );
-  const otherUserId = useRef(null);
+  const callerId = 'voicehealth-staging-contact-1'
+  
+  // useState(
+  //   Math.floor(100000 + Math.random() * 900000).toString(),
+  // );
+  const otherUserId = 'room-test-hm';
+  const sessionId = SessionManager.getSessionId()
 
-  const socket = SocketIOClient('http://192.168.2.201:3500', {
+  console.log('Connecting to signaling server...');
+  const socket = SocketIOClient('wss://alexa-vhcare.hmdev.org/ws', {
     transports: ['websocket'],
     query: {
       callerId,
     },
   });
 
-  const [localMicOn, setlocalMicOn] = useState(true);
+  console.log('Connected to signaling server');
 
+  const [localMicOn, setlocalMicOn] = useState(true);
   const [localWebcamOn, setlocalWebcamOn] = useState(true);
 
   const peerConnection = useRef(
@@ -70,12 +73,14 @@ export default function App({}) {
 
   useEffect(() => {
     socket.on('newCall', data => {
+      console.log('New call received:', data);
       remoteRTCMessage.current = data.rtcMessage;
       otherUserId.current = data.callerId;
       setType('INCOMING_CALL');
     });
 
     socket.on('callAnswered', data => {
+      console.log('Call answered:', data);
       remoteRTCMessage.current = data.rtcMessage;
       peerConnection.current.setRemoteDescription(
         new RTCSessionDescription(remoteRTCMessage.current),
@@ -84,6 +89,7 @@ export default function App({}) {
     });
 
     socket.on('ICEcandidate', data => {
+      console.log('ICE candidate received:', data);
       let message = data.rtcMessage;
 
       if (peerConnection.current) {
@@ -96,10 +102,10 @@ export default function App({}) {
             }),
           )
           .then(data => {
-            console.log('SUCCESS');
+            console.log('Successfully added ICE candidate');
           })
           .catch(err => {
-            console.log('Error', err);
+            console.log('Error adding ICE candidate', err);
           });
       }
     });
@@ -132,31 +138,32 @@ export default function App({}) {
           },
         })
         .then(stream => {
-          // Got stream!
-
+          console.log('Local stream obtained:', stream);
           setlocalStream(stream);
-
-          // setup stream listening
           peerConnection.current.addStream(stream);
         })
         .catch(error => {
-          // Log error
+          console.log('Error getting user media:', error);
         });
     });
 
     peerConnection.current.onaddstream = event => {
+      console.log('Remote stream added:', event.stream);
       setRemoteStream(event.stream);
     };
 
-    // Setup ice handling
     peerConnection.current.onicecandidate = event => {
       if (event.candidate) {
+        console.log('Sending ICE candidate:', event.candidate);
         sendICEcandidate({
           calleeId: otherUserId.current,
           rtcMessage: {
             label: event.candidate.sdpMLineIndex,
             id: event.candidate.sdpMid,
             candidate: event.candidate.candidate,
+            target: 'room-test-hm', // Replace with actual target
+            source: 'voicehealth-staging-contact-1', // Replace with actual source
+            sessionId: sessionId,
           },
         });
       } else {
@@ -182,36 +189,68 @@ export default function App({}) {
   }, []);
 
   function sendICEcandidate(data) {
+    console.log('Sending ICE candidate:', data);
     socket.emit('ICEcandidate', data);
   }
 
+  function sendMessage(message) {
+    console.log('Sending message:', message);
+    socket.emit('message', message);
+  }
+
+  function sendRegistration(userId, sessionId) {
+    let message = {
+      type: 'register',
+      id: 'voicehealth-staging-contact-1',
+      alexaRegion: 'NA',
+      sessionId: sessionId
+    };
+    console.log('Sending registration message:', message);
+    //sendMessage(message);
+    socket.emit(message);
+
+  }
+
   async function processCall() {
+    console.log('Creating offer...');
     const sessionDescription = await peerConnection.current.createOffer();
     await peerConnection.current.setLocalDescription(sessionDescription);
-    sendCall({
-      calleeId: otherUserId.current,
-      rtcMessage: sessionDescription,
-    });
+    const offerMessage = {
+      type: 'offer',
+      sessionId: sessionId, // Replace with actual session ID
+      sdp: sessionDescription.sdp,
+      target: 'room-test-hm', // Replace with actual target
+      source: 'voicehealth-staging-contact-1', // Replace with actual source
+      alexaRegion: 'NA',
+      id: 'voicehealth-staging-contact-1'
+    };
+    console.log('Sending offer message:', offerMessage);
+    sendCall(offerMessage);
   }
 
   async function processAccept() {
+    console.log('Processing accept...');
     peerConnection.current.setRemoteDescription(
       new RTCSessionDescription(remoteRTCMessage.current),
     );
     const sessionDescription = await peerConnection.current.createAnswer();
     await peerConnection.current.setLocalDescription(sessionDescription);
-    answerCall({
+    const answerMessage = {
       callerId: otherUserId.current,
       rtcMessage: sessionDescription,
-    });
+    };
+    console.log('Sending answer message:', answerMessage);
+    answerCall(answerMessage);
   }
 
   function answerCall(data) {
+    console.log('Answering call with data:', data);
     socket.emit('answerCall', data);
   }
 
   function sendCall(data) {
-    socket.emit('call', data);
+    console.log('Sending call with data:', data);
+    socket.emit(data);
   }
 
   const JoinScreen = () => {
@@ -275,10 +314,10 @@ export default function App({}) {
               </Text>
               <TextInputContainer
                 placeholder={'Enter Caller ID'}
-                value={otherUserId.current}
+                value={'room-test-hm'}
                 setValue={text => {
                   otherUserId.current = text;
-                  console.log('TEST', otherUserId.current);
+                  console.log('Updated otherUserId:', otherUserId.current);
                 }}
                 keyboardType={'number-pad'}
               />
@@ -301,6 +340,27 @@ export default function App({}) {
                     color: '#FFFFFF',
                   }}>
                   Call Now
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  //setType('OUTGOING_CALL');
+                  sendRegistration('voicehealth-staging-contact-1', '421421444');
+                }}
+                style={{
+                  height: 50,
+                  backgroundColor: '#5568FE',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  borderRadius: 12,
+                  marginTop: 16,
+                }}>
+                <Text
+                  style={{
+                    fontSize: 16,
+                    color: '#FFFFFF',
+                  }}>
+                  Register
                 </Text>
               </TouchableOpacity>
             </View>
@@ -419,6 +479,7 @@ export default function App({}) {
 
   function switchCamera() {
     localStream.getVideoTracks().forEach(track => {
+      console.log('Switching camera...');
       track._switchCamera();
     });
   }
@@ -426,6 +487,7 @@ export default function App({}) {
   function toggleCamera() {
     localWebcamOn ? setlocalWebcamOn(false) : setlocalWebcamOn(true);
     localStream.getVideoTracks().forEach(track => {
+      console.log('Toggling camera:', localWebcamOn ? 'off' : 'on');
       localWebcamOn ? (track.enabled = false) : (track.enabled = true);
     });
   }
@@ -433,11 +495,13 @@ export default function App({}) {
   function toggleMic() {
     localMicOn ? setlocalMicOn(false) : setlocalMicOn(true);
     localStream.getAudioTracks().forEach(track => {
+      console.log('Toggling mic:', localMicOn ? 'off' : 'on');
       localMicOn ? (track.enabled = false) : (track.enabled = true);
     });
   }
 
   function leave() {
+    console.log('Leaving the call...');
     peerConnection.current.close();
     setlocalStream(null);
     setType('JOIN');
@@ -550,3 +614,25 @@ export default function App({}) {
       return null;
   }
 }
+
+
+const SessionManager = (function() {
+  let sessionId = null;
+
+  function generateSessionId() {
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+          const r = (Math.random() * 16) | 0,
+              v = c === 'x' ? r : (r & 0x3) | 0x8;
+          return v.toString(16);
+      });
+  }
+
+  return {
+      getSessionId: function() {
+          if (!sessionId) {
+              sessionId = generateSessionId();
+          }
+          return sessionId;
+      }
+  };
+})();
