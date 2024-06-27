@@ -1,4 +1,4 @@
-import React, {useEffect, useState, useRef} from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   Platform,
   KeyboardAvoidingView,
@@ -9,7 +9,6 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import TextInputContainer from './components/TextInputContainer';
-import SocketIOClient from 'socket.io-client';
 import {
   mediaDevices,
   RTCPeerConnection,
@@ -28,30 +27,15 @@ import IconContainer from './components/IconContainer';
 import InCallManager from 'react-native-incall-manager';
 
 export default function App({}) {
-  const [localStream, setlocalStream] = useState(null);
+  const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
   const [type, setType] = useState('JOIN');
+  const [localMicOn, setLocalMicOn] = useState(true);
+  const [localWebcamOn, setLocalWebcamOn] = useState(true);
 
-  const callerId = 'voicehealth-staging-contact-1'
-  
-  // useState(
-  //   Math.floor(100000 + Math.random() * 900000).toString(),
-  // );
-  const otherUserId = 'room-test-hm';
-  const sessionId = SessionManager.getSessionId()
-
-  console.log('Connecting to signaling server...');
-  const socket = SocketIOClient('wss://alexa-vhcare.hmdev.org/ws', {
-    transports: ['websocket'],
-    query: {
-      callerId,
-    },
-  });
-
-  console.log('Connected to signaling server');
-
-  const [localMicOn, setlocalMicOn] = useState(true);
-  const [localWebcamOn, setlocalWebcamOn] = useState(true);
+  const callerId = 'voicehealth-staging-contact-1';
+  const otherUserId = useRef('room-test-hm');
+  const sessionId = SessionManager.getSessionId();
 
   const peerConnection = useRef(
     new RTCPeerConnection({
@@ -66,53 +50,185 @@ export default function App({}) {
           urls: 'stun:stun2.l.google.com:19302',
         },
       ],
-    }),
+    })
   );
 
   let remoteRTCMessage = useRef(null);
 
+  console.log('Connecting to signaling server...');
+  const socket = useRef(null);
+
   useEffect(() => {
-    socket.on('newCall', data => {
-      console.log('New call received:', data);
-      remoteRTCMessage.current = data.rtcMessage;
-      otherUserId.current = data.callerId;
-      setType('INCOMING_CALL');
-    });
+    socket.current = new WebSocket('wss://alexa-vhcare.hmdev.org/ws');
 
-    socket.on('callAnswered', data => {
-      console.log('Call answered:', data);
-      remoteRTCMessage.current = data.rtcMessage;
-      peerConnection.current.setRemoteDescription(
-        new RTCSessionDescription(remoteRTCMessage.current),
-      );
-      setType('WEBRTC_ROOM');
-    });
+    socket.current.onopen = () => {
+      console.log('Connected to signaling server');
+    };
 
-    socket.on('ICEcandidate', data => {
-      console.log('ICE candidate received:', data);
-      let message = data.rtcMessage;
+    socket.current.onclose = (event) => {
+      console.log('Disconnected from signaling server:', event.reason);
+    };
 
-      if (peerConnection.current) {
-        peerConnection?.current
-          .addIceCandidate(
-            new RTCIceCandidate({
-              candidate: message.candidate,
-              sdpMid: message.id,
-              sdpMLineIndex: message.label,
-            }),
-          )
-          .then(data => {
-            console.log('Successfully added ICE candidate');
-          })
-          .catch(err => {
-            console.log('Error adding ICE candidate', err);
-          });
+    socket.current.onerror = (error) => {
+      console.error('Connection error:', error);
+    };
+
+    socket.current.onmessage = (event) => {
+      try {
+        const data = event.data;
+        console.log('DATA BEFORE PARSE', data);
+    
+        // Ensure data is a string before parsing
+        let message;
+        if (typeof data === 'string') {
+          message = JSON.parse(data);
+          ;
+        } else {
+          console.error('Received unexpected data format:', data);
+          return;
+        }
+    
+        if (!message) {
+          console.error('Invalid WebSocket message:', data);
+          return;
+        }
+    
+        console.log('Parsed message:', message);
+    
+        if (message.type === 'newCall') {
+          console.log('New call received:', message);
+          remoteRTCMessage.current = message;
+          otherUserId.current = message.callerId;
+          setType('INCOMING_CALL');
+        } else if (message.type === 'answer') {
+          console.log('Call answered:', message);
+          if (message.sdp && message.type) {
+            remoteRTCMessage.current = message;
+            const sessionDescription = new RTCSessionDescription({
+              sdp: message.sdp,
+              type: message.type,
+            });
+            peerConnection.current.setRemoteDescription(sessionDescription)
+              .then(() => {
+                console.log('Remote description set successfully');
+                setType('WEBRTC_ROOM');
+              })
+              .catch((error) => {
+                console.error('Error setting remote description:', error);
+              });
+          } else {
+            console.error('RTC message missing sdp or type:', message);
+          }
+        } else if (message.type === 'ICEcandidate') {
+          console.log('ICE candidate received:', message);
+    
+          if (message.candidate && message.sdpMid && message.sdpMLineIndex !== null) {
+            peerConnection.current
+              .addIceCandidate(
+                new RTCIceCandidate({
+                  candidate: message.candidate,
+                  sdpMid: message.sdpMid,
+                  sdpMLineIndex: message.sdpMLineIndex,
+                })
+              )
+              .then(() => {
+                console.log('Successfully added ICE candidate');
+              })
+              .catch((err) => {
+                console.log('Error adding ICE candidate', err);
+              });
+          } else {
+            console.error('Invalid ICE candidate message:', message);
+          }
+        } else {
+          console.error('Unknown message type:', message.type);
+        }
+      } catch (error) {
+        console.error('Failed to process onmessage event:', error);
       }
-    });
+    };
+    
+    
+    
+
+    function parseWebSocketMessage(data) {
+      try {
+        // Ensure the data is treated as a string and parse it as JSON
+        const message = JSON.parse(data);
+        console.log('Parsed message data:', message);
+    
+        let { type, rtcMessage } = message;
+    
+        // If rtcMessage is a string, parse it again
+        if (typeof rtcMessage === 'string') {
+          try {
+            rtcMessage = JSON.parse(rtcMessage);
+          } catch (error) {
+            console.error('Failed to parse nested rtcMessage:', error);
+            rtcMessage = null;
+          }
+        }
+    
+        if (rtcMessage && typeof rtcMessage === 'object') {
+          const {
+            sdp = null,
+            sessionId = null,
+            candidate = null,
+            id: sdpMid = null,
+            label: sdpMLineIndex = null,
+            error = null
+          } = rtcMessage;
+    
+          return {
+            type,
+            sdp,
+            sessionId,
+            candidate,
+            sdpMid,
+            sdpMLineIndex,
+            error
+          };
+        } else {
+          console.error('Invalid rtcMessage format:', rtcMessage);
+          return {
+            type,
+            sdp: null,
+            sessionId: null,
+            candidate: null,
+            sdpMid: null,
+            sdpMLineIndex: null,
+            error: null
+          };
+        }
+      } catch (error) {
+        console.error('Failed to parse WebSocket message:', error);
+        return null;
+      }
+    }
+    
+    
+    
+    // function parseRTCMessage(rtcMessage) {
+    //   try {
+    //     if (rtcMessage) {
+    //       const message = JSON.parse(rtcMessage);
+    //       if (message && message.sdp && message.type) {
+    //         return message;
+    //       }
+    //     }
+    //   } catch (error) {
+    //     console.error('Failed to parse RTC message:', error);
+    //   }
+    //   return null;
+    // }
+    
+    
+    
+    
 
     let isFront = false;
 
-    mediaDevices.enumerateDevices().then(sourceInfos => {
+    mediaDevices.enumerateDevices().then((sourceInfos) => {
       let videoSourceId;
       for (let i = 0; i < sourceInfos.length; i++) {
         const sourceInfo = sourceInfos[i];
@@ -129,30 +245,30 @@ export default function App({}) {
           audio: true,
           video: {
             mandatory: {
-              minWidth: 500, // Provide your own width, height and frame rate here
+              minWidth: 500,
               minHeight: 300,
               minFrameRate: 30,
             },
             facingMode: isFront ? 'user' : 'environment',
-            optional: videoSourceId ? [{sourceId: videoSourceId}] : [],
+            optional: videoSourceId ? [{ sourceId: videoSourceId }] : [],
           },
         })
-        .then(stream => {
+        .then((stream) => {
           console.log('Local stream obtained:', stream);
-          setlocalStream(stream);
+          setLocalStream(stream);
           peerConnection.current.addStream(stream);
         })
-        .catch(error => {
+        .catch((error) => {
           console.log('Error getting user media:', error);
         });
     });
 
-    peerConnection.current.onaddstream = event => {
+    peerConnection.current.onaddstream = (event) => {
       console.log('Remote stream added:', event.stream);
       setRemoteStream(event.stream);
     };
 
-    peerConnection.current.onicecandidate = event => {
+    peerConnection.current.onicecandidate = (event) => {
       if (event.candidate) {
         console.log('Sending ICE candidate:', event.candidate);
         sendICEcandidate({
@@ -161,8 +277,8 @@ export default function App({}) {
             label: event.candidate.sdpMLineIndex,
             id: event.candidate.sdpMid,
             candidate: event.candidate.candidate,
-            target: 'room-test-hm', // Replace with actual target
-            source: 'voicehealth-staging-contact-1', // Replace with actual source
+            target: 'room-test-hm',
+            source: 'voicehealth-staging-contact-1',
             sessionId: sessionId,
           },
         });
@@ -172,9 +288,7 @@ export default function App({}) {
     };
 
     return () => {
-      socket.off('newCall');
-      socket.off('callAnswered');
-      socket.off('ICEcandidate');
+      socket.current.close();
     };
   }, []);
 
@@ -190,12 +304,12 @@ export default function App({}) {
 
   function sendICEcandidate(data) {
     console.log('Sending ICE candidate:', data);
-    socket.emit('ICEcandidate', data);
+    socket.current.send(JSON.stringify({ type: 'ICEcandidate', data }));
   }
 
   function sendMessage(message) {
     console.log('Sending message:', message);
-    socket.emit('message', message);
+    socket.current.send(JSON.stringify(message));
   }
 
   function sendRegistration(userId, sessionId) {
@@ -203,12 +317,10 @@ export default function App({}) {
       type: 'register',
       id: 'voicehealth-staging-contact-1',
       alexaRegion: 'NA',
-      sessionId: sessionId
+      sessionId: sessionId,
     };
     console.log('Sending registration message:', message);
-    //sendMessage(message);
-    socket.emit(message);
-
+    socket.current.send(JSON.stringify(message));
   }
 
   async function processCall() {
@@ -217,40 +329,46 @@ export default function App({}) {
     await peerConnection.current.setLocalDescription(sessionDescription);
     const offerMessage = {
       type: 'offer',
-      sessionId: sessionId, // Replace with actual session ID
+      sessionId: sessionId,
       sdp: sessionDescription.sdp,
-      target: 'room-test-hm', // Replace with actual target
-      source: 'voicehealth-staging-contact-1', // Replace with actual source
+      target: 'room-test-hm',
+      source: 'voicehealth-staging-contact-1',
       alexaRegion: 'NA',
-      id: 'voicehealth-staging-contact-1'
+      id: 'voicehealth-staging-contact-1',
     };
     console.log('Sending offer message:', offerMessage);
-    sendCall(offerMessage);
+    socket.current.send(JSON.stringify(offerMessage));
   }
 
   async function processAccept() {
     console.log('Processing accept...');
-    peerConnection.current.setRemoteDescription(
-      new RTCSessionDescription(remoteRTCMessage.current),
-    );
-    const sessionDescription = await peerConnection.current.createAnswer();
-    await peerConnection.current.setLocalDescription(sessionDescription);
+    const sessionDescription = new RTCSessionDescription({
+      sdp: remoteRTCMessage.current.sdp,
+      type: 'offer', // Assuming the type is 'offer'
+    });
+    await peerConnection.current.setRemoteDescription(sessionDescription);
+    const answerDescription = await peerConnection.current.createAnswer();
+    await peerConnection.current.setLocalDescription(answerDescription);
     const answerMessage = {
       callerId: otherUserId.current,
-      rtcMessage: sessionDescription,
+      rtcMessage: {
+        sdp: answerDescription.sdp,
+        type: answerDescription.type,
+      },
     };
     console.log('Sending answer message:', answerMessage);
     answerCall(answerMessage);
   }
+  
 
   function answerCall(data) {
     console.log('Answering call with data:', data);
-    socket.emit('answerCall', data);
+    socket.current.send(JSON.stringify({ type: 'answerCall', data }));
   }
 
   function sendCall(data) {
     console.log('Sending call with data:', data);
-    socket.emit(data);
+    socket.current.send(JSON.stringify(data));
   }
 
   const JoinScreen = () => {
@@ -262,7 +380,8 @@ export default function App({}) {
           backgroundColor: '#050A0E',
           justifyContent: 'center',
           paddingHorizontal: 42,
-        }}>
+        }}
+      >
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <>
             <View
@@ -272,12 +391,14 @@ export default function App({}) {
                 justifyContent: 'center',
                 alignItems: 'center',
                 borderRadius: 14,
-              }}>
+              }}
+            >
               <Text
                 style={{
                   fontSize: 18,
                   color: '#D0D4DD',
-                }}>
+                }}
+              >
                 Your Caller ID
               </Text>
               <View
@@ -285,13 +406,15 @@ export default function App({}) {
                   flexDirection: 'row',
                   marginTop: 12,
                   alignItems: 'center',
-                }}>
+                }}
+              >
                 <Text
                   style={{
                     fontSize: 32,
                     color: '#ffff',
                     letterSpacing: 6,
-                  }}>
+                  }}
+                >
                   {callerId}
                 </Text>
               </View>
@@ -304,18 +427,20 @@ export default function App({}) {
                 marginTop: 25,
                 justifyContent: 'center',
                 borderRadius: 14,
-              }}>
+              }}
+            >
               <Text
                 style={{
                   fontSize: 18,
                   color: '#D0D4DD',
-                }}>
+                }}
+              >
                 Enter call id of another user
               </Text>
               <TextInputContainer
                 placeholder={'Enter Caller ID'}
                 value={'room-test-hm'}
-                setValue={text => {
+                setValue={(text) => {
                   otherUserId.current = text;
                   console.log('Updated otherUserId:', otherUserId.current);
                 }}
@@ -333,18 +458,19 @@ export default function App({}) {
                   alignItems: 'center',
                   borderRadius: 12,
                   marginTop: 16,
-                }}>
+                }}
+              >
                 <Text
                   style={{
                     fontSize: 16,
                     color: '#FFFFFF',
-                  }}>
+                  }}
+                >
                   Call Now
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={() => {
-                  //setType('OUTGOING_CALL');
                   sendRegistration('voicehealth-staging-contact-1', '421421444');
                 }}
                 style={{
@@ -354,12 +480,14 @@ export default function App({}) {
                   alignItems: 'center',
                   borderRadius: 12,
                   marginTop: 16,
-                }}>
+                }}
+              >
                 <Text
                   style={{
                     fontSize: 16,
                     color: '#FFFFFF',
-                  }}>
+                  }}
+                >
                   Register
                 </Text>
               </TouchableOpacity>
@@ -377,19 +505,22 @@ export default function App({}) {
           flex: 1,
           justifyContent: 'space-around',
           backgroundColor: '#050A0E',
-        }}>
+        }}
+      >
         <View
           style={{
             padding: 35,
             justifyContent: 'center',
             alignItems: 'center',
             borderRadius: 14,
-          }}>
+          }}
+        >
           <Text
             style={{
               fontSize: 16,
               color: '#D0D4DD',
-            }}>
+            }}
+          >
             Calling to...
           </Text>
 
@@ -399,7 +530,8 @@ export default function App({}) {
               marginTop: 12,
               color: '#ffff',
               letterSpacing: 6,
-            }}>
+            }}
+          >
             {otherUserId.current}
           </Text>
         </View>
@@ -407,7 +539,8 @@ export default function App({}) {
           style={{
             justifyContent: 'center',
             alignItems: 'center',
-          }}>
+          }}
+        >
           <TouchableOpacity
             onPress={() => {
               setType('JOIN');
@@ -420,7 +553,8 @@ export default function App({}) {
               aspectRatio: 1,
               justifyContent: 'center',
               alignItems: 'center',
-            }}>
+            }}
+          >
             <CallEnd width={50} height={12} />
           </TouchableOpacity>
         </View>
@@ -435,20 +569,23 @@ export default function App({}) {
           flex: 1,
           justifyContent: 'space-around',
           backgroundColor: '#050A0E',
-        }}>
+        }}
+      >
         <View
           style={{
             padding: 35,
             justifyContent: 'center',
             alignItems: 'center',
             borderRadius: 14,
-          }}>
+          }}
+        >
           <Text
             style={{
               fontSize: 36,
               marginTop: 12,
               color: '#ffff',
-            }}>
+            }}
+          >
             {otherUserId.current} is calling..
           </Text>
         </View>
@@ -456,7 +593,8 @@ export default function App({}) {
           style={{
             justifyContent: 'center',
             alignItems: 'center',
-          }}>
+          }}
+        >
           <TouchableOpacity
             onPress={() => {
               processAccept();
@@ -469,7 +607,8 @@ export default function App({}) {
               aspectRatio: 1,
               justifyContent: 'center',
               alignItems: 'center',
-            }}>
+            }}
+          >
             <CallAnswer height={28} fill={'#fff'} />
           </TouchableOpacity>
         </View>
@@ -478,23 +617,23 @@ export default function App({}) {
   };
 
   function switchCamera() {
-    localStream.getVideoTracks().forEach(track => {
+    localStream.getVideoTracks().forEach((track) => {
       console.log('Switching camera...');
       track._switchCamera();
     });
   }
 
   function toggleCamera() {
-    localWebcamOn ? setlocalWebcamOn(false) : setlocalWebcamOn(true);
-    localStream.getVideoTracks().forEach(track => {
+    localWebcamOn ? setLocalWebcamOn(false) : setLocalWebcamOn(true);
+    localStream.getVideoTracks().forEach((track) => {
       console.log('Toggling camera:', localWebcamOn ? 'off' : 'on');
       localWebcamOn ? (track.enabled = false) : (track.enabled = true);
     });
   }
 
   function toggleMic() {
-    localMicOn ? setlocalMicOn(false) : setlocalMicOn(true);
-    localStream.getAudioTracks().forEach(track => {
+    localMicOn ? setLocalMicOn(false) : setLocalMicOn(true);
+    localStream.getAudioTracks().forEach((track) => {
       console.log('Toggling mic:', localMicOn ? 'off' : 'on');
       localMicOn ? (track.enabled = false) : (track.enabled = true);
     });
@@ -503,7 +642,7 @@ export default function App({}) {
   function leave() {
     console.log('Leaving the call...');
     peerConnection.current.close();
-    setlocalStream(null);
+    setLocalStream(null);
     setType('JOIN');
   }
 
@@ -515,11 +654,12 @@ export default function App({}) {
           backgroundColor: '#050A0E',
           paddingHorizontal: 12,
           paddingVertical: 12,
-        }}>
+        }}
+      >
         {localStream ? (
           <RTCView
             objectFit={'cover'}
-            style={{flex: 1, backgroundColor: '#050A0E'}}
+            style={{ flex: 1, backgroundColor: '#050A0E' }}
             streamURL={localStream.toURL()}
           />
         ) : null}
@@ -539,7 +679,8 @@ export default function App({}) {
             marginVertical: 12,
             flexDirection: 'row',
             justifyContent: 'space-evenly',
-          }}>
+          }}
+        >
           <IconContainer
             backgroundColor={'red'}
             onPress={() => {
@@ -615,24 +756,23 @@ export default function App({}) {
   }
 }
 
-
-const SessionManager = (function() {
+const SessionManager = (function () {
   let sessionId = null;
 
   function generateSessionId() {
-      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-          const r = (Math.random() * 16) | 0,
-              v = c === 'x' ? r : (r & 0x3) | 0x8;
-          return v.toString(16);
-      });
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      const r = (Math.random() * 16) | 0,
+        v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
   }
 
   return {
-      getSessionId: function() {
-          if (!sessionId) {
-              sessionId = generateSessionId();
-          }
-          return sessionId;
+    getSessionId: function () {
+      if (!sessionId) {
+        sessionId = generateSessionId();
       }
+      return sessionId;
+    },
   };
 })();
